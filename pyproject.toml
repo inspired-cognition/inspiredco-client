@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inspiredco"
+authors = [
+    {name = "Inspired Cognition", email = "contact@inspiredco.ai"},
+]
+description = "Inspired Cognition API client"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
+dynamic = ["version"]
+
+[tool.setuptools.dynamic]
+version = {attr = "inspiredco.version.VERSION"}
