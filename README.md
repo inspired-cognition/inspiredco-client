@@ -4,7 +4,8 @@ This is the API client to [Inspired Cognition](https://inspiredco.ai) services.
 
 ## Getting Started
 
-To install the client, run the following command:
+To install the client, make sure you have Python 3.8 or higher, and then run the
+following command:
 
 ```shell
 pip install .

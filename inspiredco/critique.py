@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import datetime
 import time
 from typing import Any, Literal, TypedDict
 
 from inspiredco import client_base
+from inspiredco.critique_utils import exceptions
 
 origin = "https://critique.api.inspiredco.ai"
 
@@ -12,6 +14,8 @@ class CritiqueStatus(TypedDict):
     metric: str
     status: Literal["queued", "succeeded", "failed"]
     detail: str | None
+    created_at: datetime.datetime | None
+    updated_at: datetime.datetime | None
 
 
 class Critique(client_base.ClientBase):
@@ -34,12 +38,12 @@ class Critique(client_base.ClientBase):
             The task ID.
 
         Raises:
-            RuntimeError: If the input values are invalid.
+            CritiqueError: If the input values are invalid.
         """
         request_body = {"metric": metric, "config": config, "dataset": dataset}
         response = self.http_post(origin + "/evaluate/submit_task", request_body)
         if response.status_code != 200:
-            raise RuntimeError(
+            raise exceptions.RequestFailed(
                 f"Error {response.status_code} in submitting task: {response.text}."
             )
         return response.json()["task_id"]
@@ -62,6 +66,7 @@ class Critique(client_base.ClientBase):
             * "queued": The task is queued and possibly processing.
             * "succeeded": The task has succeeded.
             * "failed": The task has failed.
+            * "unknown": No data is available for that task ID.
 
             The "detail" key may include additional information.
 
@@ -71,29 +76,44 @@ class Critique(client_base.ClientBase):
         request_body = {"task_id": task_id}
         response = self.http_post(origin + "/evaluate/fetch_status", request_body)
         if response.status_code != 200:
-            raise RuntimeError(
+            raise exceptions.RequestFailed(
                 f"Error {response.status_code} in fetching task {task_id} "
                 f"status: {response.text}."
             )
         json_response = response.json()
+        created_at = (
+            datetime.datetime.fromisoformat(json_response["created_at"])
+            if "created_at" in json_response
+            else None
+        )
+        updated_str = json_response.get("updated_at")
+        updated_at = (
+            datetime.datetime.fromisoformat(updated_str) if updated_str else None
+        )
+        created_str = json_response.get("created_at")
+        created_at = (
+            datetime.datetime.fromisoformat(created_str) if created_str else None
+        )
         return {
             "metric": json_response["metric"],
             "status": json_response["status"],
             "detail": json_response.get("detail"),
+            "created_at": created_at,
+            "updated_at": updated_at,
         }
 
     def fetch_result(
         self,
         task_id: str,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         """Get the result of a Critique task.
 
         Args:
             task_id: The ID of the task to fetch.
 
         Returns:
-            The result of the task in dictionary format. This will include at
-            least the following keys:
+            Either the result of the task in dictionary format, or None if there is
+            no data available. The dictionary will include at least the following keys:
             * "overall": The overall score over the whole dataset.
             * "example": The score for each example in the dataset.
 
@@ -102,8 +122,10 @@ class Critique(client_base.ClientBase):
         """
         request_body = {"task_id": task_id}
         response = self.http_post(origin + "/evaluate/fetch_result", request_body)
+        if response.status_code == 204:
+            return None
         if response.status_code != 200:
-            raise RuntimeError(
+            raise exceptions.RequestFailed(
                 f"Error {response.status_code} in fetching task {task_id} "
                 f"result: {response.text}."
             )
@@ -112,11 +134,14 @@ class Critique(client_base.ClientBase):
     def wait_for_result(
         self,
         task_id: str,
+        *,
+        timeout: int = 600,
     ) -> dict[str, Any]:
         """Wait for a task to finish and return the result.
 
         Args:
             task_id: The ID of the task to fetch.
+            timeout: The maximum time to wait for the task to finish in seconds.
 
         Returns:
             The result of the task in dictionary format.
@@ -135,17 +160,27 @@ class Critique(client_base.ClientBase):
             if status == "succeeded":
                 break
             if status == "failed":
-                raise RuntimeError(f"Task failed: {full_status['detail']}")
+                raise exceptions.TaskFailed(
+                    f"Task {task_id} failed: {full_status['detail']}"
+                )
+            if total_time > timeout:
+                raise exceptions.Timeout(
+                    f"Task {task_id} did not complete in {timeout} seconds."
+                )
             sleep_time = 1 if total_time < 10 else 5
             time.sleep(sleep_time)
 
-        return self.fetch_result(task_id)
+        result = self.fetch_result(task_id)
+        # Result should not be "none" if the task has succeeded
+        assert result is not None
+        return result
 
     def evaluate(
         self,
         metric: str,
         config: dict[str, Any],
         dataset: list[dict[str, Any]],
+        timeout: int = 600,
     ) -> dict[str, Any]:
         """Make a request to Critique and wait for the result.
 
@@ -153,6 +188,7 @@ class Critique(client_base.ClientBase):
             metric: The name of the metric to use.
             config: The configuration for the metric.
             dataset: The dataset to process.
+            timeout: The maximum time to wait for the task to finish in seconds.
 
         Returns:
             The result of the task in dictionary format. This will include at
@@ -166,4 +202,4 @@ class Critique(client_base.ClientBase):
         # Submit task
         self._logger.info(f"Submitting task to {metric}.")
         task_id = self.submit_task(metric, config, dataset)
-        return self.wait_for_result(task_id)
+        return self.wait_for_result(task_id, timeout=timeout)
