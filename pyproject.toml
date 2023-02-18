@@ -1,6 +1,8 @@
 [build-system]
-requires = ["setuptools", "setuptools-scm"]
-build-backend = "setuptools.build_meta"
+requires = [
+    "hatchling",
+]
+build-backend = "hatchling.build"
 
 [project]
 name = "inspiredco"
@@ -21,5 +23,17 @@ dependencies = [
 ]
 dynamic = ["version"]
 
-[tool.setuptools.dynamic]
-version = {attr = "inspiredco.version.VERSION"}
+[tool.hatch.build]
+include = [
+    "*.py",
+]
+exclude = [
+    "*_test.py",
+]
+only-packages = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["inspiredco"]
+
+[tool.hatch.version]
+path = "inspiredco/version.py"
