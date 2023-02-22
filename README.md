@@ -8,7 +8,7 @@ To install the client, make sure you have Python 3.8 or higher, and then run the
 following command:
 
 ```shell
-pip install .
+pip install inspiredco
 ```
 
 To use the API, you will need an API key. You can obtain one by traveling to the
