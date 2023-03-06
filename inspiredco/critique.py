@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import statistics
 import time
 from typing import Any, Literal, TypedDict
 
@@ -8,6 +9,16 @@ from inspiredco import client_base
 from inspiredco.critique_utils import exceptions
 
 origin = "https://critique.api.inspiredco.ai"
+
+
+metric_example_limits = {
+    "bart_score": 250,
+    "bert_score": 2000,
+    "comet": 250,
+    "detoxify": 2000,
+    "uni_eval": 250,
+}
+unparalellizable_metrics = {"bleu"}
 
 
 class CritiqueStatus(TypedDict):
@@ -40,6 +51,12 @@ class Critique(client_base.ClientBase):
         Raises:
             CritiqueError: If the input values are invalid.
         """
+        if metric in metric_example_limits:
+            if len(dataset) > metric_example_limits[metric]:
+                raise ValueError(
+                    f"Metric {metric} is limited to {metric_example_limits[metric]} "
+                    f"examples, but {len(dataset)} examples were provided."
+                )
         request_body = {"metric": metric, "config": config, "dataset": dataset}
         response = self.http_post(origin + "/evaluate/submit_task", request_body)
         if response.status_code != 200:
@@ -47,6 +64,43 @@ class Critique(client_base.ClientBase):
                 f"Error {response.status_code} in submitting task: {response.text}."
             )
         return response.json()["task_id"]
+
+    def submit_tasks_parallel(
+        self,
+        metric: str,
+        config: dict[str, Any],
+        dataset: list[dict[str, Any]],
+    ) -> list[str]:
+        """Submit tasks to Critique in parallel.
+
+        This is done by splitting up the task into chunks based on the metric's
+        example limit. If the metric is not parallelizable, this will raise an
+        error.
+
+        Args:
+            metric: The name of the metric to use.
+            config: The configuration for the metric.
+            dataset: The dataset to process.
+
+        Returns:
+            A list of task IDs for the submitted tasks.
+
+        Raises:
+            ValueError: If the input values are invalid.
+        """
+        if metric in unparalellizable_metrics:
+            raise ValueError(f"Metric {metric} is not parallelizable.")
+        example_limit = metric_example_limits.get(metric, len(dataset))
+        task_ids = []
+        for i in range(0, len(dataset), example_limit):
+            task_ids.append(
+                self.submit_task(
+                    metric,
+                    config,
+                    dataset[i : i + example_limit],
+                )
+            )
+        return task_ids
 
     def fetch_status(
         self,
@@ -175,6 +229,36 @@ class Critique(client_base.ClientBase):
         assert result is not None
         return result
 
+    @staticmethod
+    def merge_results(
+        metric: str,
+        results: list[dict[str, Any]],
+    ):
+        """Merge the results of multiple tasks.
+
+        Args:
+            results: The results to merge.
+
+        Returns:
+            The merged results.
+
+        Raises:
+            ValueError: If the metric is not parallelizable.
+        """
+        if len(results) == 1:
+            return results[0]
+        if metric in unparalellizable_metrics:
+            raise ValueError(f"Metric {metric} is not parallelizable.")
+        examples: list[dict[str, Any]] = sum(
+            (result["example"] for result in results), []
+        )
+        overall_keys = results[0]["overall"].keys()
+        overall = {
+            key: statistics.mean([example[key] for example in examples])
+            for key in overall_keys
+        }
+        return {"overall": overall, "example": examples}
+
     def evaluate(
         self,
         metric: str,
@@ -199,7 +283,12 @@ class Critique(client_base.ClientBase):
         Raises:
             RuntimeError: If an error occurs.
         """
-        # Submit task
         self._logger.info(f"Submitting task to {metric}.")
-        task_id = self.submit_task(metric, config, dataset)
-        return self.wait_for_result(task_id, timeout=timeout)
+        if metric in unparalellizable_metrics:
+            task_ids = [self.submit_task(metric, config, dataset)]
+        else:
+            task_ids = self.submit_tasks_parallel(metric, config, dataset)
+        results = [
+            self.wait_for_result(task_id, timeout=timeout) for task_id in task_ids
+        ]
+        return self.merge_results(metric, results)
